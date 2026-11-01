@@ -1,0 +1,51 @@
+---
+# Deploy and verify the Zero Trust lab on the local machine.
+# Usage: ansible-playbook ansible/site.yml
+- name: Deploy the Zero Trust mTLS lab
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    project_dir: "{{ playbook_dir }}/.."
+    certs_dir: "{{ project_dir }}/certs"
+    endpoint: "https://localhost:8443/"
+
+  tasks:
+    - name: Generate the private PKI (idempotent)
+      ansible.builtin.command:
+        cmd: "{{ project_dir }}/scripts/pki.sh {{ certs_dir }}"
+        creates: "{{ certs_dir }}/client.crt"
+
+    - name: Start the stack with Docker Compose
+      ansible.builtin.command:
+        cmd: docker compose up -d --wait
+        chdir: "{{ project_dir }}"
+      register: compose_up
+      changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr"
+
+    - name: Request WITH a valid client certificate must succeed
+      ansible.builtin.uri:
+        url: "{{ endpoint }}"
+        ca_path: "{{ certs_dir }}/ca.crt"
+        client_cert: "{{ certs_dir }}/client.crt"
+        client_key: "{{ certs_dir }}/client.key"
+        return_content: true
+        status_code: 200
+      register: with_cert
+      retries: 5
+      delay: 2
+      until: with_cert.status is defined and with_cert.status == 200
+
+    - name: Backend received the verified caller identity
+      ansible.builtin.assert:
+        that:
+          - "'CN=alice' in with_cert.content"
+          - "'SUCCESS' in with_cert.content"
+        success_msg: "mTLS OK: backend saw CN=alice with verification SUCCESS"
+
+    - name: Request WITHOUT a client certificate must be rejected
+      ansible.builtin.uri:
+        url: "{{ endpoint }}"
+        ca_path: "{{ certs_dir }}/ca.crt"
+        status_code: 400
+      register: without_cert

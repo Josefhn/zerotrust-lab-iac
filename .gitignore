@@ -1,0 +1,5 @@
+# Never commit generated keys and certificates
+certs/
+*.key
+*.pem
+*.srl
